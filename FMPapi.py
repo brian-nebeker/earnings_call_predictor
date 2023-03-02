@@ -3,8 +3,9 @@ import certifi
 import json
 import pandas as pd
 from urllib.request import urlopen
+from config_file import configuration
 
-api_key = "3dfdfba6272ec8469270c1f8977e726f"
+api_key = configuration.api_key
 symbol = "AAPL"
 quarter = 3
 year = 2020
