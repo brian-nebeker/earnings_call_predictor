@@ -5,7 +5,7 @@ import pandas as pd
 from urllib.request import urlopen
 from config_file import configuration
 
-api_key = configuration.api_key
+api_key = configuration().api_key
 symbol = "AAPL"
 quarter = 3
 year = 2020
