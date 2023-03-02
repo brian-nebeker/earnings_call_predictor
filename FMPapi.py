@@ -18,16 +18,18 @@ def get_api_data(url):
 
 def get_symbols():
     # Get symbols
+    # https://site.financialmodelingprep.com/developer/docs/stock-market-quote-free-api/#Python
     symbol_url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={api_key}"
     symbol_data = get_api_data(symbol_url)
     symbol_df = pd.read_json(symbol_data)
     symbol_df = symbol_df[symbol_df['type'] == 'stock']
-    symbols = list(symbol_df['symbol'].drop_duplicates())
-    return symbols
+    #symbols = list(symbol_df['symbol'].drop_duplicates())
+    return symbol_df
 
 
 def get_price_data(symbol):
     # Get price data
+    # https://site.financialmodelingprep.com/developer/docs/historical-stock-data-free-api/#Python
     price_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?apikey={api_key}&from=1000-01-01"
     price_data = get_api_data(price_url)
     price_df = pd.read_json(price_data)
@@ -61,7 +63,7 @@ def get_price_data(symbol):
 
 def collect_all_earnings_transcripts(symbol, price_df):
     # Collect all earnings transcripts
-    print('Collecting Earning Transcripts')
+    # https://site.financialmodelingprep.com/developer/docs/earning-call-transcript-api/#Python
     all_years_quarters = price_df[['year', 'quarter']].copy().drop_duplicates()
     all_earnings_df = pd.DataFrame()
     previous_blank = False
@@ -69,7 +71,6 @@ def collect_all_earnings_transcripts(symbol, price_df):
         # Get quarter and year from earliest date in price data
         quarter = row['quarter']
         year = row['year']
-        print(quarter, year)
 
         # Create url
         earnings_url = f"https://financialmodelingprep.com/api/v3/earning_call_transcript/{symbol}?quarter={quarter}&year={year}&apikey={api_key}"
@@ -96,7 +97,14 @@ def collect_all_earnings_transcripts(symbol, price_df):
     return result
 
 
-symbols = get_symbols()
-symbol = symbols[2]
-price_df = get_price_data(symbol)
-result = collect_all_earnings_transcripts(symbol, price_df)
+symbol_df = get_symbols()
+symbol_df = symbol_df.loc[(symbol_df['exchangeShortName']=='NYSE') | (symbol_df['exchangeShortName']=='NASDAQ')]
+symbol_df = symbol_df[symbol_df['price']>25]
+symbols = list(symbol_df['symbol'].drop_duplicates())
+data = pd.DataFrame()
+for symbol in tqdm(symbols, desc="Collecting data"):
+    price_df = get_price_data(symbol)
+    result = collect_all_earnings_transcripts(symbol, price_df)
+    data = pd.concat([data, result], ignore_index=True)
+
+data.to_parquet('initial_data.prq')
