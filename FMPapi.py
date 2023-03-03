@@ -61,14 +61,14 @@ def get_price_data(symbol):
     return price_df
 
 
-def collect_all_earnings_transcripts(symbol, price_df):
+def combine_earnings_price(symbol, price_df):
     # Collect all earnings transcripts
     # https://site.financialmodelingprep.com/developer/docs/earning-call-transcript-api/#Python
     all_years_quarters = price_df[['year', 'quarter']].copy().drop_duplicates()
     all_earnings_df = pd.DataFrame()
     previous_blank = False
     for index, row in all_years_quarters.iterrows():
-        # Get quarter and year from earliest date in price data
+        # Get quarter and year from the earliest date in price data
         quarter = row['quarter']
         year = row['year']
 
@@ -82,8 +82,11 @@ def collect_all_earnings_transcripts(symbol, price_df):
                 if all_earnings_df.empty:
                     return
                 else:
-                    result = pd.merge(all_earnings_df, price_df, on='date', how='left')
-                    return result
+                    try:
+                        result = pd.merge(all_earnings_df, price_df, on='date', how='inner')
+                        return result
+                    except KeyError:
+                        return
             previous_blank = True
             continue
         earn_df = pd.read_json(earn_data)
@@ -93,18 +96,19 @@ def collect_all_earnings_transcripts(symbol, price_df):
         all_earnings_df = pd.concat([all_earnings_df, earn_df], ignore_index=True)
         previous_blank = False
 
-    result = pd.merge(all_earnings_df, price_df, on='date', how='left')
+    result = pd.merge(all_earnings_df, price_df, on='date', how='inner')
     return result
 
 
 symbol_df = get_symbols()
-symbol_df = symbol_df.loc[(symbol_df['exchangeShortName']=='NYSE') | (symbol_df['exchangeShortName']=='NASDAQ')]
-symbol_df = symbol_df[symbol_df['price']>25]
+symbol_df = symbol_df.loc[symbol_df['exchangeShortName'] == 'NYSE']
+# symbol_df = symbol_df.loc[(symbol_df['exchangeShortName'] == 'NYSE') | (symbol_df['exchangeShortName'] == 'NASDAQ')]
+symbol_df = symbol_df[symbol_df['price']>200]
 symbols = list(symbol_df['symbol'].drop_duplicates())
 data = pd.DataFrame()
 for symbol in tqdm(symbols, desc="Collecting data"):
     price_df = get_price_data(symbol)
-    result = collect_all_earnings_transcripts(symbol, price_df)
+    result = combine_earnings_price(symbol, price_df)
     data = pd.concat([data, result], ignore_index=True)
 
-data.to_parquet('initial_data.prq')
+data.to_parquet('nyse_price_100.prq')
