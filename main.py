@@ -1,6 +1,6 @@
 import pandas as pd
 
-df = pd.read_parquet('scrape.prq')
+df = pd.read_parquet('nasdaq_price_100.prq')
 
-df['date'].value_counts()['MISSING']
-df.columns
+df.describe()
+df.info()
