@@ -165,7 +165,7 @@ def engineer_features(symbol):
 
     # Set date as index, add suffix to columns
     engineered_df = engineered_df.set_index('date')
-    #engineered_df = engineered_df.add_suffix('_'+str(symbol))
+    engineered_df['symbol'] = symbol
     return engineered_df
 
 
@@ -182,22 +182,14 @@ print("Start")
 # Create symbols for dataframe construction
 symbols = get_symbols()
 symbols = symbols[symbols['exchangeShortName'] == 'NYSE'].copy()
-symbols = symbols[symbols['price']>10].copy()
 symbols_list = symbols['symbol'].tolist()
-symbols_list = symbols_list[:100]
-
-# Report time to create symbols
-end_time = time.time()
-print(f"Created symbols. Elapsed:", end_time - start_time)
+print(f"Created symbols. Elapsed: {time.time() - start_time:.1f}sec")
 
 
 # Submit jobs for each symbol, future is result of job
 with ThreadPoolExecutor() as executor:
     futures = [executor.submit(engineer_features_wrapper, symbol) for symbol in symbols_list]
-
-# Report time to submit jobs
-end_time = time.time()
-print(f"Submitted jobs. Elapsed:", end_time - start_time)
+print(f"Submitted jobs. Elapsed: {time.time() - start_time:.1f}sec")
 
 
 # Use as_completed to iterate over completed futures store results in dictionary
@@ -205,27 +197,31 @@ results_dict = {}
 for future in as_completed(futures):
     symbol, df = future.result()
     results_dict[symbol] = df
-
-# Report time to complete jobs
-end_time = time.time()
-print(f"Completed jobs. Elapsed:", end_time - start_time)
-
-
-# Combine dataframes into single dataframe
-combined_df = pd.concat(results_dict.values(), axis=1, keys=results_dict.keys())
-
-
-# Report time to complete data creation
-end_time = time.time()
-print(f"Completed. Elapsed time for {len(symbols_list)} symbols: {(end_time - start_time) / 60}min")
+print(f"Completed jobs. Elapsed: {time.time() - start_time:.1f}sec")
 
 
 # Best signals
-vert_combined_df = pd.concat(results_dict.values(), axis=0)
-vert_combined_df = vert_combined_df.dropna()
+combined_df = pd.concat(results_dict.values(), axis=0)
+combined_df.to_parquet('price_data.prq')
+print(f"Completed. Elapsed time for {len(symbols_list)} symbols: {(time.time() - start_time) / 60:.1f}min")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Grab target features
-targets = vert_combined_df[['target_percent_change_1', 'target_percent_change_30', 'target_percent_change_60',
+targets = combined_df[['target_percent_change_1', 'target_percent_change_30', 'target_percent_change_60',
                            'target_percent_change_90', 'target_percent_change_252']].copy()
 
 for column in targets.columns:
@@ -236,25 +232,29 @@ for column in targets.columns:
 drop_columns = ['target_percent_change_1', 'target_percent_change_30', 'target_percent_change_60',
                 'target_percent_change_90', 'target_percent_change_252', 'close_lead_1',
                 'close_lead_30', 'close_lead_90', 'close_lead_180', 'close_lead_252']
-X = vert_combined_df.drop(drop_columns, axis=1)
+X = combined_df.drop(drop_columns, axis=1)
 
 # Train Test Split
 from sklearn.model_selection import train_test_split
-X_train, X_test, y_train, y_test = train_test_split(X, targets['target_percent_change_1'], test_size=0.25)
+X_train, X_test, y_train, y_test = train_test_split(X, targets['target_percent_change_30_T10'], test_size=0.25)
 
 # Create model
-from sklearn.ensemble import RandomForestRegressor
-regr = RandomForestRegressor(max_depth=20, verbose=1, n_jobs=-1)
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score, confusion_matrix, classification_report, f1_score
+clf = RandomForestClassifier(max_depth=20, verbose=1, n_jobs=-1)
 
 print("Fitting Model")
-regr.fit(X_train, y_train)
+clf.fit(X_train, y_train)
 
-regr.score(X_test, y_test)
+y_pred_proba = clf.predict_proba(X_test)[:,1]
+y_pred = clf.predict(X_test)
+
+roc_auc_score(y_test, y_pred_proba)
+confusion_matrix(y_test, y_pred)
+print(classification_report(y_test, y_pred))
 
 feature_importance = pd.DataFrame(X.columns)
-feature_importance['importances'] = regr.feature_importances_
-
-pd.qcut(target3, q=10)
+feature_importance['importances'] = clf.feature_importances_
 
 
 
