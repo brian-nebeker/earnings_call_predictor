@@ -49,6 +49,7 @@ def get_price_data(symbol):
 def calc_percent_change(df, percent_change_periods):
     for period in percent_change_periods:
         df['percent_change_' + str(period)] = df['close'].pct_change(periods=period)
+        df['target_percent_change_' + str(period)] = df['percent_change_' + str(period)].shift(-period)
     return df
 
 
@@ -162,8 +163,9 @@ def engineer_features(symbol):
     long_ema_period = 26
     engineered_df = calc_macd(engineered_df, short_ema_period, long_ema_period)
 
-    # Rename columns to reflect symbol
-    engineered_df = engineered_df.rename(columns={c: c + '_' + symbol for c in engineered_df.columns if c not in ['date']})
+    # Set date as index, add suffix to columns
+    engineered_df = engineered_df.set_index('date')
+    #engineered_df = engineered_df.add_suffix('_'+str(symbol))
     return engineered_df
 
 
@@ -173,45 +175,86 @@ def engineer_features_wrapper(symbol):
     return (symbol, df)
 
 
+# Initiate start time
 start_time = time.time()
+print("Start")
 
 # Create symbols for dataframe construction
 symbols = get_symbols()
 symbols = symbols[symbols['exchangeShortName'] == 'NYSE'].copy()
 symbols = symbols[symbols['price']>10].copy()
 symbols_list = symbols['symbol'].tolist()
+symbols_list = symbols_list[:100]
+
+# Report time to create symbols
+end_time = time.time()
+print(f"Created symbols. Elapsed:", end_time - start_time)
+
 
 # Submit jobs for each symbol, future is result of job
 with ThreadPoolExecutor() as executor:
     futures = [executor.submit(engineer_features_wrapper, symbol) for symbol in symbols_list]
 
+# Report time to submit jobs
 end_time = time.time()
-print(f"Submitted jobs. Elapsed:", end_time = time.time())
+print(f"Submitted jobs. Elapsed:", end_time - start_time)
+
 
 # Use as_completed to iterate over completed futures store results in dictionary
 results_dict = {}
-for future in tqdm(as_completed(futures), total=len(futures)):
+for future in as_completed(futures):
     symbol, df = future.result()
     results_dict[symbol] = df
 
+# Report time to complete jobs
 end_time = time.time()
-print(f"Completed jobs. Elapsed:", end_time = time.time())
+print(f"Completed jobs. Elapsed:", end_time - start_time)
 
 
 # Combine dataframes into single dataframe
-results = pd.DataFrame(pd.date_range(start="2000-01-01", end=str(date.today())), columns=['date'])
-for symbol, df in results_dict.items():
-    results = pd.merge(results, df, on='date', how='left')
+combined_df = pd.concat(results_dict.values(), axis=1, keys=results_dict.keys())
 
-for symbol, df in results_dict.items():
-    print(symbol)
 
+# Report time to complete data creation
 end_time = time.time()
-print(f"Completed. Elapsed time for {len(symbols_list)} symbols:", end_time - start_time)
+print(f"Completed. Elapsed time for {len(symbols_list)} symbols: {(end_time - start_time) / 60}min")
 
-# 11.21 for 10
-# 45.92 for 50
-# 270.13 for 300
+
+# Best signals
+vert_combined_df = pd.concat(results_dict.values(), axis=0)
+vert_combined_df = vert_combined_df.dropna()
+
+# Grab target features
+targets = vert_combined_df[['target_percent_change_1', 'target_percent_change_30', 'target_percent_change_60',
+                           'target_percent_change_90', 'target_percent_change_252']].copy()
+
+for column in targets.columns:
+    targets[column+'_T10'] = (targets[column].rank(pct=True)>0.9).astype(int)
+
+
+# Create independent variables
+drop_columns = ['target_percent_change_1', 'target_percent_change_30', 'target_percent_change_60',
+                'target_percent_change_90', 'target_percent_change_252', 'close_lead_1',
+                'close_lead_30', 'close_lead_90', 'close_lead_180', 'close_lead_252']
+X = vert_combined_df.drop(drop_columns, axis=1)
+
+# Train Test Split
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(X, targets['target_percent_change_1'], test_size=0.25)
+
+# Create model
+from sklearn.ensemble import RandomForestRegressor
+regr = RandomForestRegressor(max_depth=20, verbose=1, n_jobs=-1)
+
+print("Fitting Model")
+regr.fit(X_train, y_train)
+
+regr.score(X_test, y_test)
+
+feature_importance = pd.DataFrame(X.columns)
+feature_importance['importances'] = regr.feature_importances_
+
+pd.qcut(target3, q=10)
 
 
 
