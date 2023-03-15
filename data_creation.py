@@ -48,8 +48,8 @@ def get_price_data(symbol):
 
 def calc_percent_change(df, percent_change_periods):
     for period in percent_change_periods:
-        df['percent_change_' + str(period)] = df['close'].pct_change(periods=period)
-        df['target_percent_change_' + str(period)] = df['percent_change_' + str(period)].shift(-period)
+        df['pct_change_' + str(period)] = df['close'].pct_change(periods=period)
+        df['target_pct_change_' + str(period)] = df['pct_change_' + str(period)].shift(-period)
     return df
 
 
