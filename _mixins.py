@@ -120,9 +120,21 @@ class NedHedgeFundMixins:
         upper_band = rolling_mean + (num_std * rolling_std)
         lower_band = rolling_mean - (num_std * rolling_std)
 
+        # Calculate distance of column to bands
+        distance_upper_band = upper_band - df[column]
+        distance_lower_band = df[column] - lower_band
+
+        # Create check columns if column passes band
+        upper_check = np.where(distance_upper_band < 0, 1, 0)
+        lower_check = np.where(distance_lower_band < 0, 1, 0)
+
         # Add the Bollinger Bands to the dataframe
         df[f"{column}_boll_upper_w{window_size}_std{num_std}"] = upper_band
         df[f"{column}_boll_lower_w{window_size}_std{num_std}"] = lower_band
+        df[f"{column}_dist_upper_w{window_size}_std{num_std}"] = distance_upper_band
+        df[f"{column}_dist_lower_w{window_size}_std{num_std}"] = distance_lower_band
+        df[f"{column}_check_upper_w{window_size}_std{num_std}"] = upper_check
+        df[f"{column}_check_lower_w{window_size}_std{num_std}"] = lower_check
         return df
 
     def calc_macd(self, df, column, short_ema_period, long_ema_period):  # 26/12/9
@@ -147,22 +159,24 @@ class NedHedgeFundMixins:
 
         percent_change_periods = [1, 30, 60, 90, 252]
         engineered_df = self.calc_percent_change(engineered_df, 'close', percent_change_periods)
+        engineered_df = self.calc_percent_change(engineered_df, 'volume', percent_change_periods)
 
         # Rolling Averages
-        rolling_avg_periods = [i for i in range(1, 252, 10)]
+        rolling_avg_periods = [10, 20, 30, 60, 120, 252]
         engineered_df = self.calc_rolling_avg(engineered_df, 'close', rolling_avg_periods)
-        engineered_df = self.calc_rolling_avg(engineered_df, 'close_pct_chg_1', rolling_avg_periods)
+        engineered_df = self.calc_rolling_avg(engineered_df, 'close_pct_chg1', rolling_avg_periods)
+        engineered_df = self.calc_rolling_avg(engineered_df, 'volume', rolling_avg_periods)
 
         # Lags
-        lags = [i for i in range(1, 252, 10)]
+        lags = [10, 20, 30, 60, 120, 252]
         engineered_df = self.calc_lag(engineered_df, 'close', lags)
-        engineered_df = self.calc_lag(engineered_df, 'close_pct_chg_1', lags)
+        engineered_df = self.calc_lag(engineered_df, 'close_pct_chg1', lags)
 
         # Volatility
         vol_windows = [30, 90, 180, 252]
         for window in vol_windows:
             engineered_df = self.calc_volatility(engineered_df, 'close', window)
-            engineered_df = self.calc_volatility(engineered_df, 'close_pct_chg_1', window)
+            engineered_df = self.calc_volatility(engineered_df, 'close_pct_chg1', window)
 
         # Relative Strength Index
         rs_periods = [7, 14, 30]
@@ -180,7 +194,47 @@ class NedHedgeFundMixins:
         engineered_df = self.calc_macd(engineered_df, 'close', 9, 26)
 
         # Set date as index, add suffix to columns
-        engineered_df = engineered_df.set_index('date')
+        # engineered_df = engineered_df.set_index('date')
         return engineered_df
 
+    def engineer_features2(self, df, target_periods, percent_change_periods, rolling_avg_periods, lags, vol_windows, rs_periods):
+        # Percent Changes
+        engineered_df = self.calc_target_variables(df, 'close', target_periods)
 
+        engineered_df = self.calc_percent_change(engineered_df, 'close', percent_change_periods)
+        # TODO: determine why pct chg volume creates inf and nans
+        engineered_df = self.calc_percent_change(engineered_df, 'volume', percent_change_periods)
+
+        # Rolling Averages
+        engineered_df = self.calc_rolling_avg(engineered_df, 'close', rolling_avg_periods)
+        engineered_df = self.calc_rolling_avg(engineered_df, 'close_pct_chg1', rolling_avg_periods)
+        # TODO: determine why rolling volume creates inf and nans
+        engineered_df = self.calc_rolling_avg(engineered_df, 'volume', rolling_avg_periods)
+
+        # Lags
+        # TODO: determine why lagged pct chg leads to inf and nans
+        engineered_df = self.calc_lag(engineered_df, 'close', lags)
+        engineered_df = self.calc_lag(engineered_df, 'close_pct_chg1', lags)
+
+        # Volatility
+        for window in vol_windows:
+            engineered_df = self.calc_volatility(engineered_df, 'close', window)
+            engineered_df = self.calc_volatility(engineered_df, 'close_pct_chg1', window)
+
+        # Relative Strength Index
+        for period in rs_periods:
+            engineered_df = self.calc_rel_strength_index(engineered_df, 'close', period)
+
+        # Bollinger Bands
+        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 10, 1.5)
+        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 20, 2)
+        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 50, 2.5)
+
+        # MACD
+        engineered_df = self.calc_macd(engineered_df, 'close', 9, 12)
+        engineered_df = self.calc_macd(engineered_df, 'close', 12, 26)
+        engineered_df = self.calc_macd(engineered_df, 'close', 9, 26)
+
+        # Set date as index, add suffix to columns
+        # engineered_df = engineered_df.set_index('date')
+        return engineered_df
