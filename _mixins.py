@@ -55,8 +55,8 @@ class NedHedgeFundMixins:
 
     def calc_target_variables(self, df, column, target_periods):
         for period in target_periods:
-            percent_change_column_name = str(column) + '_pct_chg_' + str(period)
-            target_variable_column_name = 'target_' + str(column) + '_' + str(period)
+            percent_change_column_name = f"{column}_pct_chg_{period}"
+            target_variable_column_name = f"target_{column}_{period}"
 
             df[percent_change_column_name] = df[column].pct_change(periods=period)
             df[target_variable_column_name] = df[percent_change_column_name].shift(-period)
@@ -66,28 +66,28 @@ class NedHedgeFundMixins:
 
     def calc_percent_change(self, df, column, percent_change_periods):
         for period in percent_change_periods:
-            df[str(column) + '_pct_chg_' + str(period)] = df[column].pct_change(periods=period)
+            df[f"{column}_pct_chg{period}"] = df[column].pct_change(periods=period)
         return df
 
     def calc_rolling_avg(self, df, column, rolling_avg_periods):
         for period in rolling_avg_periods:
-            df[str(column) + 'rolling' + str(period)] = df[column].rolling(period).mean()
+            df[f"{column}_rolling{period}"] = df[column].rolling(period).mean()
         return df
 
     def calc_lag_lead(self, df, column, lags):
         for lag in lags:
-            df[str(column) + '_lag' + str(lag)] = df[column].shift(lag)
-            df[str(column) + '_lead' + str(lag)] = df[column].shift(-lag)
+            df[f"{column}_lag{lag}"] = df[column].shift(lag)
+            df[f"{column}_lead{lag}"] = df[column].shift(-lag)
         return df
 
     def calc_lag(self, df, column, lags):
         for lag in lags:
-            df[str(column) + '_lag' + str(lag)] = df[column].shift(lag)
+            df[f"{column}_lag{lag}"] = df[column].shift(lag)
         return df
 
     def calc_volatility(self, df, column, window):
-        df[str(column) + '_std' + str(window)] = df[column].rolling(window).std()
-        df[str(column) + '_volatility' + str(window)] = df[column].rolling(window).std() * np.sqrt(window)
+        df[f"{column}_std{window}"] = df[column].rolling(window).std()
+        df[f"{column}_volatility{window}"] = df[column].rolling(window).std() * np.sqrt(window)
         return df
 
     def calc_rel_strength_index(self, df, column, period):  # above 70 vs below 30
@@ -106,8 +106,8 @@ class NedHedgeFundMixins:
         rsi_lower_check = np.where(rsi < 30, -1, 0)
         rsi_check = rsi_upper_check + rsi_lower_check
 
-        df[str(column) + '_rsi' + str(period)] = rsi
-        df[str(column) + '_rsi_bi' + str(period)] = rsi_check
+        df[f"{column}_rsi{period}"] = rsi
+        df[f"{column}_rsi_bi{period}"] = rsi_check
         return df
 
     def calc_bollinger_bands(self, df, column, window_size, num_std):  # 2std, 20 window
@@ -121,8 +121,8 @@ class NedHedgeFundMixins:
         lower_band = rolling_mean - (num_std * rolling_std)
 
         # Add the Bollinger Bands to the dataframe
-        df[str(column) + '_boll_upper_w' + str(window_size) + '_std' + str(num_std)] = upper_band
-        df[str(column) + '_boll_lower_w' + str(window_size) + '_std' + str(num_std)] = lower_band
+        df[f"{column}_boll_upper_w{window_size}_std{num_std}"] = upper_band
+        df[f"{column}_boll_lower_w{window_size}_std{num_std}"] = lower_band
         return df
 
     def calc_macd(self, df, column, short_ema_period, long_ema_period):  # 26/12/9
@@ -136,8 +136,8 @@ class NedHedgeFundMixins:
         signal_line = macd.ewm(span=9).mean()
 
         # Add the MACD and signal line to the dataframe
-        df[str(column) + '_macd' + str(short_ema_period) + '_' + str(long_ema_period)] = macd
-        df[str(column) + '_signal_line' + str(short_ema_period) + '_' + str(long_ema_period)] = signal_line
+        df[f"{column}_macd_{short_ema_period}_{long_ema_period}"] = macd
+        df[f"{column}_signal_line_{short_ema_period}_{long_ema_period}"] = signal_line
         return df
 
     def engineer_features(self, df):
