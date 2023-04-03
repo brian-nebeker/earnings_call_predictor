@@ -10,6 +10,7 @@ from datetime import date
 from urllib.request import urlopen
 from tqdm import tqdm
 from config_file import configuration
+from sklearn.preprocessing import MinMaxScaler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 api_key = configuration().api_key
@@ -21,9 +22,6 @@ Could be used as a trash heap for storage of in progress functions to keep other
 
 
 class NedHedgeFundMixins:
-    def example(self):
-        print(2+2)
-
     def get_api_data(self, url):
         ctx = ssl.create_default_context(cafile=certifi.where())
         response = urlopen(url, context=ctx)
@@ -48,6 +46,7 @@ class NedHedgeFundMixins:
         if 'historical' in price_df.columns:
             price_df = price_df['historical'].apply(pd.Series)
             price_df['date'] = pd.to_datetime(price_df['date'])
+            price_df = price_df.sort_index(ascending=False)
             return price_df
         else:
             print(f"No historical data found for symbol: {symbol}")
@@ -86,8 +85,8 @@ class NedHedgeFundMixins:
         return df
 
     def calc_volatility(self, df, column, window):
-        df[f"{column}_std{window}"] = df[column].rolling(window).std()
-        df[f"{column}_volatility{window}"] = df[column].rolling(window).std() * np.sqrt(window)
+        df[f"{column}_std_w{window}"] = df[column].rolling(window).std()
+        df[f"{column}_volatility_w{window}"] = df[column].rolling(window).std() * np.sqrt(window)
         return df
 
     def calc_rel_strength_index(self, df, column, period):  # above 70 vs below 30
@@ -106,8 +105,8 @@ class NedHedgeFundMixins:
         rsi_lower_check = np.where(rsi < 30, -1, 0)
         rsi_check = rsi_upper_check + rsi_lower_check
 
-        df[f"{column}_rsi{period}"] = rsi
-        df[f"{column}_rsi_bi{period}"] = rsi_check
+        df[f"{column}_rsi_p{period}"] = rsi
+        df[f"{column}_rsi_check_p{period}"] = rsi_check
         return df
 
     def calc_bollinger_bands(self, df, column, window_size, num_std):  # 2std, 20 window
@@ -124,20 +123,20 @@ class NedHedgeFundMixins:
         distance_upper_band = upper_band - df[column]
         distance_lower_band = df[column] - lower_band
 
-        # Create check columns if column passes band
+        # Create check column if column passes band
         upper_check = np.where(distance_upper_band < 0, 1, 0)
-        lower_check = np.where(distance_lower_band < 0, 1, 0)
+        lower_check = np.where(distance_lower_band < 0, -1, 0)
+        bollinger_check = upper_check + lower_check
 
         # Add the Bollinger Bands to the dataframe
         df[f"{column}_boll_upper_w{window_size}_std{num_std}"] = upper_band
         df[f"{column}_boll_lower_w{window_size}_std{num_std}"] = lower_band
-        df[f"{column}_dist_upper_w{window_size}_std{num_std}"] = distance_upper_band
-        df[f"{column}_dist_lower_w{window_size}_std{num_std}"] = distance_lower_band
-        df[f"{column}_check_upper_w{window_size}_std{num_std}"] = upper_check
-        df[f"{column}_check_lower_w{window_size}_std{num_std}"] = lower_check
+        df[f"{column}_boll_dist_upper_w{window_size}_std{num_std}"] = distance_upper_band
+        df[f"{column}_boll_dist_lower_w{window_size}_std{num_std}"] = distance_lower_band
+        df[f"{column}_boll_check_w{window_size}_std{num_std}"] = bollinger_check
         return df
 
-    def calc_macd(self, df, column, short_ema_period, long_ema_period):  # 26/12/9
+    def calc_macd(self, df, column, short_ema_period, long_ema_period, signal_period):  # 26/12/9
         # Moving Average Convergence Divergence MACD
         # Calculate the short and long exponential moving averages
         short_ema = df[column].ewm(span=short_ema_period).mean()
@@ -145,14 +144,112 @@ class NedHedgeFundMixins:
 
         # Calculate the MACD and signal line
         macd = short_ema - long_ema
-        signal_line = macd.ewm(span=9).mean()
+        signal_line = macd.ewm(span=signal_period).mean()
+
+        upper_check = np.where(macd > signal_line, 1, 0)
+        lower_check = np.where(macd < signal_line, -1, 0)
 
         # Add the MACD and signal line to the dataframe
-        df[f"{column}_macd_{short_ema_period}_{long_ema_period}"] = macd
-        df[f"{column}_signal_line_{short_ema_period}_{long_ema_period}"] = signal_line
+        df[f"{column}_macd_p{short_ema_period}_{long_ema_period}"] = macd
+        df[f"{column}_signal_line_p{short_ema_period}_{long_ema_period}"] = signal_line
         return df
 
-    def engineer_features(self, df):
+    def calc_min_max_scale(self, df, column):
+        scaler = MinMaxScaler()
+        scaler.fit(df[[column]])
+        scaled_column = scaler.transform(df[[column]])
+        df[f"{column}_mmscaled"] = scaled_column
+        return df
+
+    def calc_engineer_features(self,
+                               df,
+                               do_target_variable,
+                               do_percent_change,
+                               do_rolling_avg,
+                               do_lags,
+                               do_volatility,
+                               do_relative_strength,
+                               do_bollinger_bad,
+                               do_macd,
+                               do_min_max_scale,
+                               target_periods,
+                               percent_change_periods,
+                               rolling_avg_periods,
+                               lags,
+                               volatility_windows,
+                               relative_strength_periods,
+                               bollinger_band_params,
+                               macd_parms,
+                               target_variable_col,
+                               percent_change_col,
+                               rolling_avg_col,
+                               lags_col,
+                               volatility_col,
+                               relative_strength_col,
+                               bollinger_band_col,
+                               macd_col,
+                               min_max_scale_col):
+
+        # Create copy of df as engineered df to avoid UnboundLocalError
+        engineered_df = df.copy()
+
+
+        # Percent Changes
+        if do_target_variable:
+            for col in target_variable_col:
+                engineered_df = self.calc_target_variables(engineered_df, col, target_periods)
+
+        if do_percent_change:
+            for col in percent_change_col:
+                engineered_df = self.calc_percent_change(engineered_df, col, percent_change_periods)
+        # TODO: determine why pct chg volume creates inf and nans
+
+        # Rolling Averages
+        if do_rolling_avg:
+            for col in rolling_avg_col:
+                engineered_df = self.calc_rolling_avg(engineered_df, col, rolling_avg_periods)
+        # TODO: determine why rolling volume creates inf and nans
+
+        # Lags
+        if do_lags:
+            for col in lags_col:
+                engineered_df = self.calc_lag(engineered_df, col, lags)
+        # TODO: determine why lagged pct chg leads to inf and nans
+
+        # Volatility
+        if do_volatility:
+            for col in volatility_col:
+                for window in volatility_windows:
+                    engineered_df = self.calc_volatility(engineered_df, col, window)
+
+        # Relative Strength Index
+        if do_relative_strength:
+            for col in relative_strength_col:
+                for period in relative_strength_periods:
+                    engineered_df = self.calc_rel_strength_index(engineered_df, col, period)
+
+        # Bollinger Bands
+        if do_bollinger_bad:
+            for col in bollinger_band_col:
+                for window, std in bollinger_band_params:
+                    engineered_df = self.calc_bollinger_bands(engineered_df, col, window, std)
+
+        # MACD
+        if do_macd:
+            for col in macd_col:
+                for lower, upper, signal in macd_parms:
+                    engineered_df = self.calc_macd(engineered_df, col, lower, upper, signal)
+
+        # Min Max Scaling
+        if do_min_max_scale:
+            for col in min_max_scale_col:
+                engineered_df = self.calc_min_max_scale(engineered_df, col)
+
+        # Set date as index, add suffix to columns
+        # engineered_df = engineered_df.set_index('date')
+        return engineered_df
+
+    def engineer_features_old(self, df):
         # Percent Changes
         target_periods = [1, 30, 60, 90, 252]
         engineered_df = self.calc_target_variables(df, 'close', target_periods)
@@ -180,48 +277,6 @@ class NedHedgeFundMixins:
 
         # Relative Strength Index
         rs_periods = [7, 14, 30]
-        for period in rs_periods:
-            engineered_df = self.calc_rel_strength_index(engineered_df, 'close', period)
-
-        # Bollinger Bands
-        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 10, 1.5)
-        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 20, 2)
-        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 50, 2.5)
-
-        # MACD
-        engineered_df = self.calc_macd(engineered_df, 'close', 9, 12)
-        engineered_df = self.calc_macd(engineered_df, 'close', 12, 26)
-        engineered_df = self.calc_macd(engineered_df, 'close', 9, 26)
-
-        # Set date as index, add suffix to columns
-        # engineered_df = engineered_df.set_index('date')
-        return engineered_df
-
-    def engineer_features2(self, df, target_periods, percent_change_periods, rolling_avg_periods, lags, vol_windows, rs_periods):
-        # Percent Changes
-        engineered_df = self.calc_target_variables(df, 'close', target_periods)
-
-        engineered_df = self.calc_percent_change(engineered_df, 'close', percent_change_periods)
-        # TODO: determine why pct chg volume creates inf and nans
-        engineered_df = self.calc_percent_change(engineered_df, 'volume', percent_change_periods)
-
-        # Rolling Averages
-        engineered_df = self.calc_rolling_avg(engineered_df, 'close', rolling_avg_periods)
-        engineered_df = self.calc_rolling_avg(engineered_df, 'close_pct_chg1', rolling_avg_periods)
-        # TODO: determine why rolling volume creates inf and nans
-        engineered_df = self.calc_rolling_avg(engineered_df, 'volume', rolling_avg_periods)
-
-        # Lags
-        # TODO: determine why lagged pct chg leads to inf and nans
-        engineered_df = self.calc_lag(engineered_df, 'close', lags)
-        engineered_df = self.calc_lag(engineered_df, 'close_pct_chg1', lags)
-
-        # Volatility
-        for window in vol_windows:
-            engineered_df = self.calc_volatility(engineered_df, 'close', window)
-            engineered_df = self.calc_volatility(engineered_df, 'close_pct_chg1', window)
-
-        # Relative Strength Index
         for period in rs_periods:
             engineered_df = self.calc_rel_strength_index(engineered_df, 'close', period)
 
