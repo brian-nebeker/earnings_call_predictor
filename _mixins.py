@@ -2,11 +2,11 @@ import ssl
 import certifi
 import json
 import pickle
+import time
+import datetime
 import pandas as pd
 import numpy as np
-import time
 import matplotlib.pyplot as plt
-from datetime import date
 from urllib.request import urlopen
 from tqdm import tqdm
 from config_file import configuration
@@ -45,12 +45,71 @@ class NedHedgeFundMixins:
         price_df = pd.read_json(price_data)
         if 'historical' in price_df.columns:
             price_df = price_df['historical'].apply(pd.Series)
-            price_df['date'] = pd.to_datetime(price_df['date'])
-            price_df = price_df.sort_index(ascending=False)
-            return price_df
+            if 'close' in price_df.columns:
+                price_df['date'] = pd.to_datetime(price_df['date'])
+                price_df = price_df.sort_index(ascending=False)
+                return price_df
+            else:
+                print(f"No close data found for symbol: {symbol}")
+                return pd.DataFrame()
         else:
             print(f"No historical data found for symbol: {symbol}")
             return pd.DataFrame()
+
+    def check_dictionary_data_quality(self, data, sparse_data_threshold, repeat_data_threshold, low_volume_threshold):
+        # Initiate data checking
+        empty_data_keys = []
+        repeat_data_keys = []
+        sparse_data_keys = []
+        low_volume_keys = []
+
+        # Add symbol column for group by
+        for key, df in data.items():
+            # Check if dataframe is empty
+            if df.empty:
+                empty_data_keys.append(key)
+                continue
+            # Check for few rows of data
+            if len(df) <= sparse_data_threshold:
+                sparse_data_keys.append(key)
+
+            # begin checking for data quality
+            recent_close_values = df['close'][-repeat_data_threshold:].values
+            recent_volume = df['volume'][-repeat_data_threshold:].sum() / 10
+
+            # Check for repeated close data in recent days
+            if len(set(recent_close_values)) == 1:
+                repeat_data_keys.append(key)
+            # Check for recent volume
+            if recent_volume <= low_volume_threshold:
+                low_volume_keys.append(key)
+
+            # If in none of the columns add symbol
+            if key not in empty_data_keys + repeat_data_keys + sparse_data_keys + low_volume_keys:
+                df['symbol'] = key
+                data[key] = df
+
+        # Create list of "bad keys"
+        bad_keys = list(set(empty_data_keys + repeat_data_keys + sparse_data_keys + low_volume_keys))
+
+        # Store bad keys in dictionary with indicator of what qualifies them for bad data
+        key_membership = {key: [key in empty_data_keys,
+                                key in repeat_data_keys,
+                                key in sparse_data_keys,
+                                key in low_volume_keys] for key in bad_keys}
+
+        # Convert key_membership dictionary to dataframe to be saved
+        key_df = pd.DataFrame.from_dict(key_membership, orient='index',
+                                        columns=['empty_data', 'repeat_data', 'sparse_data', 'low_volume'])
+        datetime_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        key_df.to_csv(f"./assets/bad_data/excluded_keys_{datetime_str}.csv")
+
+        print(f"Dropped {len(bad_keys)} of {len(data)} symbols from data dictionary")
+
+        # Drop bad keys from original dictionary
+        for key in bad_keys:
+            del data[key]
+        return data
 
     def calc_target_variables(self, df, column, target_periods):
         for period in target_periods:
@@ -293,3 +352,5 @@ class NedHedgeFundMixins:
         # Set date as index, add suffix to columns
         # engineered_df = engineered_df.set_index('date')
         return engineered_df
+
+
