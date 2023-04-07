@@ -1,11 +1,14 @@
 import time
 import pickle
 import datetime
+
+import joblib
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
+from skopt import BayesSearchCV
 from sklearn.metrics import accuracy_score, f1_score
 from sklearn.model_selection import train_test_split
 from _mixins import NedHedgeFundMixins
@@ -15,6 +18,7 @@ tqdm.pandas()
 class NedHedgeFund(NedHedgeFundMixins):
     def __init__(self,
                  exchange_name="NYSE",
+                 use_old_data: bool = False,
                  query_price_data: bool = False,
                  do_engineer_features: bool = False,
                  do_univariate_test: bool = False,
@@ -49,6 +53,7 @@ class NedHedgeFund(NedHedgeFundMixins):
                  min_max_scale_col: list = ['close', 'volume']
                  ):
         self.exchange_name = exchange_name
+        self.use_old_data = use_old_data
         self.query_price_data = query_price_data
         self.do_engineer_features = do_engineer_features
         self.do_univariate_test = do_univariate_test
@@ -87,33 +92,53 @@ class NedHedgeFund(NedHedgeFundMixins):
         self.use_df = None
         self.price_df = None
         self.price_dict = None
+        self.model = None
+        self.tuned_params = None
 
     def execute(self):
         # If true, generate all new price data and convert to vert stacked dataframe, if false load dict and convert
-        if self.query_price_data:
-            print("EXECUTE: Querying new data")
-            self.price_dict = self.get_price_data_dictionary()
-            self.price_df = self.price_dict_to_dataframe(self.price_dict)
+        if self.use_old_data:
+            print("EXECUTE: Loading old data")
+            self.use_df = pd.read_parquet(f"./assets/data/{self.exchange_name}_use_df.prq")
         else:
-            print("EXECUTE: Loading previous data")
-            self.price_df = self.price_dict_to_dataframe()
+            # Query all new price data
+            if self.query_price_data:
+                print("EXECUTE: Querying new data")
+                self.price_dict = self.get_price_data_dictionary()
+                self.price_df = self.price_dict_to_dataframe(self.price_dict)
+            else:
+                print("EXECUTE: Loading previous data")
+                self.price_df = self.price_dict_to_dataframe()
 
-        # If true, engineer features for stacked dataframe
-        if self.do_engineer_features:
-            print("EXECUTE: Engineering features")
-            self.use_df = self.engineer_price_data_features(self.price_df)
-        else:
-            self.use_df = self.price_df.copy()
+            # Engineer features for stacked dataframe
+            if self.do_engineer_features:
+                print("EXECUTE: Engineering features")
+                self.use_df = self.engineer_price_data_features(self.price_df)
+            else:
+                self.use_df = self.price_df.copy()
 
-        # Add index and engineer index check
-        if self.do_add_index:
-            print("EXECUTE: Add index")
-            self.use_df = self.engineer_index_features(self.use_df)
+            # Add index and engineer index check
+            if self.do_add_index:
+                print("EXECUTE: Add index")
+                self.use_df = self.add_index_features(self.use_df)
 
-        # Do univariant testing and record results
+            # Dump use_df
+            print("EXECUTE: dumping dataframe")
+            self.use_df.to_parquet(f"./assets/data/{self.exchange_name}_use_df.prq")
+
+        # Do univariate testing and record results
         if self.do_univariate_test:
-            self.univariate_test()
-        print("EXECUTE: finished")
+            print("EXECUTE: Performing univariate testing")
+            self.univariate_test(self.use_df)
+
+        # Create initial model
+        self.define_model()
+
+        # Tune model
+        if self.do_tune_models:
+            self.tune_model()
+
+        print("EXECUTE: Finished")
         return self.use_df
 
     def get_price_data_dictionary(self):
@@ -184,7 +209,7 @@ class NedHedgeFund(NedHedgeFundMixins):
                                                   min_max_scale_col=self.min_max_scale_col)
         return engineered_df
 
-    def engineer_index_features(self, df):
+    def add_index_features(self, df):
         # Get price data for VTI (potentially other index in future
         index = "VTI"
         index_df = self.get_price_data(index)
@@ -249,77 +274,47 @@ class NedHedgeFund(NedHedgeFundMixins):
     def univariate_test(self, df):
         # Drop date column if it exists
         df.drop('date', axis=1, errors='ignore', inplace=True)
+        df.dropna(inplace=True)
 
-        # Define target variables and features
+        # Create categorical target features
+        df = self.calc_categorical_target_variables(df)
+
         print("Defining target variables and features:")
         target_variables = [col for col in df.columns if 'target' in col]
         features = [col for col in df.columns if col not in target_variables]
-
-        # Create categorical target features
-        for col in target_variables:
-            temp = pd.qcut(df[col], 10, labels=False).copy()
-            temp[temp <= 8] = 0
-            temp[temp > 8] = 1
-            df[col + '_categ'] = temp
-
-        categorical_variables = [col for col in df.columns if '_categ' in col]
+        categorical_targets = [col for col in df.columns if '_categ' in col]
 
         # Define models and metrics to be recorded
-        print("Defining models:")
-        logit = LogisticRegression()
-        tree = DecisionTreeClassifier(max_depth=5)
-        tested_column = []
-        tested_target = []
-        tested_accuracy_score_logistic = []
-        tested_f1_score_logistic = []
-        tested_accuracy_score_tree = []
-        tested_f1_score_tree = []
+        print("Testing:")
+        self.univariate_test_loop(df, categorical_targets, features)
 
-        # Loop every for every categorical target
-        for y_col in categorical_variables:
-            print(f"Testing for {y_col}")
-            train, test = train_test_split(df, train_size=0.33, random_state=42, stratify=df[y_col])
-            for x_col in tqdm(features):
-                # Record tests
-                tested_column.append(x_col)
-                tested_target.append(y_col)
+    def define_model(self):
+        self.model = DecisionTreeClassifier(max_depth=10)
 
-                # Define train test split
-                X_train = train[x_col].values.reshape(-1, 1).copy()
-                X_test = test[x_col].values.reshape(-1, 1).copy()
-                y_train = train[y_col].values.reshape(-1, 1).copy()
-                y_test = test[y_col].values.reshape(-1, 1).copy()
+    def tune_model(self):
+        # Create train test split
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.33, stratify=y)
 
-                # Fit logit models
-                try:
-                    logit.fit(X_train, y_train.ravel())
-                    logit_pred = logit.predict(X_test)
-                    tested_accuracy_score_logistic.append(accuracy_score(y_test, logit_pred))
-                    tested_f1_score_logistic.append(f1_score(y_test, logit_pred))
-                except ValueError:
-                    tested_accuracy_score_logistic.append("ValueError")
-                    tested_f1_score_logistic.append("ValueError")
+        param_grid = {'min_samples_split': Integer(2, 6)}
 
-                # Fit tree models
-                try:
-                    tree.fit(X_train, y_train.ravel())
-                    tree_pred = tree.predict(X_test)
-                    tested_accuracy_score_tree.append(accuracy_score(y_test, tree_pred))
-                    tested_f1_score_tree.append(f1_score(y_test, tree_pred))
-                except ValueError:
-                    tested_accuracy_score_tree.append("ValueError")
-                    tested_f1_score_tree.append("ValueError")
+        opt = BayesSearchCV(self.model,
+                            param_grid,
+                            n_iter=5,
+                            n_jobs=-1,
+                            random_state=42,
+                            verbose=10)
 
-        results = {"column": tested_column,
-                   "target": tested_target,
-                   "accuracy_score_logistic": tested_accuracy_score_logistic,
-                   "f1_score_logistic": tested_f1_score_logistic,
-                   "accuracy_score_tree": tested_accuracy_score_tree,
-                   "f1_score_tree": tested_f1_score_tree
-                   }
+        # Train and tune model
+        opt.fit(X_train, y_train)
 
-        # Record results
-        datetime_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        experimentation_results = pd.DataFrame(results)
-        experimentation_results.to_csv(f"./assets/experiment_results/experimentation_results_{datetime_str}.csv")
+        # Score model
+        tuned_score = opt.score(X_test, y_test)
+        print(f"Final tuned score: {tuned_score}")
+
+        # Dump best model
+        joblib.dump(opt.best_estimator_, "./assets/models/tuned_model.pkl")
+        self.model = opt.best_estimator_
+
+        return opt.best_estimator_
+
 

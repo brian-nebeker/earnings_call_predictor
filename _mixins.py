@@ -9,9 +9,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from urllib.request import urlopen
 from tqdm import tqdm
-from config_file import configuration
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score, f1_score
+from sklearn.model_selection import train_test_split
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from config_file import configuration
 
 api_key = configuration().api_key
 
@@ -55,6 +59,16 @@ class NedHedgeFundMixins:
         else:
             print(f"No historical data found for symbol: {symbol}")
             return pd.DataFrame()
+
+    def get_ratio_data(self, symbol):
+        # Get ratio data
+        ratio_url = f"https://financialmodelingprep.com/api/v3/ratios/{symbol}?period=quarter&limit=999&apikey={api_key}"
+        ratio_data = self.get_api_data(ratio_url)
+        ratio_data = pd.read_json(ratio_data)
+        # Modify date column and sort
+        ratio_data['date'] = pd.to_datetime(ratio_data['date'])
+        ratio_data = ratio_data.sort_index(ascending=False)
+        return ratio_data
 
     def check_dictionary_data_quality(self, data, sparse_data_threshold, repeat_data_threshold, low_volume_threshold):
         # Initiate data checking
@@ -120,6 +134,18 @@ class NedHedgeFundMixins:
             df[target_variable_column_name] = df[percent_change_column_name].shift(-period)
 
             df.drop(percent_change_column_name, axis=1, inplace=True)
+        return df
+
+    def calc_categorical_target_variables(self, df):
+        # Grab already existing target variables
+        target_variables = [col for col in df.columns if 'target' in col]
+
+        # Currently making categories of top 10% of percent change, may change in future
+        for col in target_variables:
+            temp = pd.qcut(df[col], 10, labels=False).copy()
+            temp[temp <= 8] = 0
+            temp[temp > 8] = 1
+            df[col + '_categ'] = temp
         return df
 
     def calc_percent_change(self, df, column, percent_change_periods):
@@ -308,49 +334,64 @@ class NedHedgeFundMixins:
         # engineered_df = engineered_df.set_index('date')
         return engineered_df
 
-    def engineer_features_old(self, df):
-        # Percent Changes
-        target_periods = [1, 30, 60, 90, 252]
-        engineered_df = self.calc_target_variables(df, 'close', target_periods)
+    def univariate_test_loop(self, df, targets, features):
+        # Define models and metrics to be recorded
+        print("Defining models:")
+        logit = LogisticRegression()
+        tree = DecisionTreeClassifier(max_depth=5)
+        tested_column = []
+        tested_target = []
+        tested_accuracy_score_logistic = []
+        tested_f1_score_logistic = []
+        tested_accuracy_score_tree = []
+        tested_f1_score_tree = []
 
-        percent_change_periods = [1, 30, 60, 90, 252]
-        engineered_df = self.calc_percent_change(engineered_df, 'close', percent_change_periods)
-        engineered_df = self.calc_percent_change(engineered_df, 'volume', percent_change_periods)
+        # Loop every for every categorical target
+        for y_col in targets:
+            print(f"Testing for {y_col}")
+            train, test = train_test_split(df, test_size=0.33, random_state=42, stratify=df[y_col])
+            for x_col in tqdm(features):
+                # Record tests
+                tested_column.append(x_col)
+                tested_target.append(y_col)
 
-        # Rolling Averages
-        rolling_avg_periods = [10, 20, 30, 60, 120, 252]
-        engineered_df = self.calc_rolling_avg(engineered_df, 'close', rolling_avg_periods)
-        engineered_df = self.calc_rolling_avg(engineered_df, 'close_pct_chg1', rolling_avg_periods)
-        engineered_df = self.calc_rolling_avg(engineered_df, 'volume', rolling_avg_periods)
+                # Define train test split
+                X_train = train[x_col].values.reshape(-1, 1).copy()
+                X_test = test[x_col].values.reshape(-1, 1).copy()
+                y_train = train[y_col].values.reshape(-1, 1).copy()
+                y_test = test[y_col].values.reshape(-1, 1).copy()
 
-        # Lags
-        lags = [10, 20, 30, 60, 120, 252]
-        engineered_df = self.calc_lag(engineered_df, 'close', lags)
-        engineered_df = self.calc_lag(engineered_df, 'close_pct_chg1', lags)
+                # Fit logit models
+                try:
+                    logit.fit(X_train, y_train.ravel())
+                    logit_pred = logit.predict(X_test)
+                    tested_accuracy_score_logistic.append(accuracy_score(y_test, logit_pred))
+                    tested_f1_score_logistic.append(f1_score(y_test, logit_pred))
+                except ValueError:
+                    tested_accuracy_score_logistic.append("ValueError")
+                    tested_f1_score_logistic.append("ValueError")
 
-        # Volatility
-        vol_windows = [30, 90, 180, 252]
-        for window in vol_windows:
-            engineered_df = self.calc_volatility(engineered_df, 'close', window)
-            engineered_df = self.calc_volatility(engineered_df, 'close_pct_chg1', window)
+                # Fit tree models
+                try:
+                    tree.fit(X_train, y_train.ravel())
+                    tree_pred = tree.predict(X_test)
+                    tested_accuracy_score_tree.append(accuracy_score(y_test, tree_pred))
+                    tested_f1_score_tree.append(f1_score(y_test, tree_pred))
+                except ValueError:
+                    tested_accuracy_score_tree.append("ValueError")
+                    tested_f1_score_tree.append("ValueError")
 
-        # Relative Strength Index
-        rs_periods = [7, 14, 30]
-        for period in rs_periods:
-            engineered_df = self.calc_rel_strength_index(engineered_df, 'close', period)
+        results = {"column": tested_column,
+                   "target": tested_target,
+                   "accuracy_score_logistic": tested_accuracy_score_logistic,
+                   "f1_score_logistic": tested_f1_score_logistic,
+                   "accuracy_score_tree": tested_accuracy_score_tree,
+                   "f1_score_tree": tested_f1_score_tree
+                   }
 
-        # Bollinger Bands
-        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 10, 1.5)
-        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 20, 2)
-        engineered_df = self.calc_bollinger_bands(engineered_df, 'close', 50, 2.5)
-
-        # MACD
-        engineered_df = self.calc_macd(engineered_df, 'close', 9, 12)
-        engineered_df = self.calc_macd(engineered_df, 'close', 12, 26)
-        engineered_df = self.calc_macd(engineered_df, 'close', 9, 26)
-
-        # Set date as index, add suffix to columns
-        # engineered_df = engineered_df.set_index('date')
-        return engineered_df
-
+        # Record results
+        datetime_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        experimentation_results = pd.DataFrame(results)
+        experimentation_results.to_csv(f"./assets/experiment_results/experimentation_results_{datetime_str}.csv")
+        return experimentation_results
 
