@@ -70,7 +70,38 @@ class NedHedgeFundMixins:
         ratio_data = ratio_data.sort_index(ascending=False)
         return ratio_data
 
-    def check_dictionary_data_quality(self, data, sparse_data_threshold, repeat_data_threshold, low_volume_threshold):
+    def get_call_data(self, symbol):
+        current_year = datetime.datetime.now().year
+        current_month = datetime.datetime.now().month
+        current_quarter = (current_month - 1) // 3 + 1
+
+        data_frame_list = []
+        empty_check = False
+        for year in range(current_year, 1999, -1):
+            for quarter in range(4, 0, -1):
+                if year == current_year:
+                    if current_quarter < quarter:
+                        continue
+                trans_url = f"https://financialmodelingprep.com/api/v3/earning_call_transcript/{symbol}?quarter={quarter}&year={year}&apikey={api_key}"
+                trans_data = self.get_api_data(trans_url)
+                trans_data = pd.read_json(trans_data)
+                if trans_data.empty:
+                    if empty_check is True:
+                        try:
+                            trans_df = pd.concat(data_frame_list, ignore_index=True)
+                        except:
+                            trans_df = pd.DataFrame()
+                        return trans_df
+                    empty_check = True
+                    continue
+
+                empty_check = False
+                data_frame_list.append(trans_data)
+
+        trans_df = pd.concat(data_frame_list, ignore_index=True)
+        return trans_df
+
+    def check_price_dictionary_data_quality(self, data, sparse_data_threshold, repeat_data_threshold, low_volume_threshold):
         # Initiate data checking
         empty_data_keys = []
         repeat_data_keys = []
@@ -99,9 +130,9 @@ class NedHedgeFundMixins:
                 low_volume_keys.append(key)
 
             # If in none of the columns add symbol
-            if key not in empty_data_keys + repeat_data_keys + sparse_data_keys + low_volume_keys:
-                df['symbol'] = key
-                data[key] = df
+            #if key not in empty_data_keys + repeat_data_keys + sparse_data_keys + low_volume_keys:
+            #    df['symbol'] = key
+            #    data[key] = df
 
         # Create list of "bad keys"
         bad_keys = list(set(empty_data_keys + repeat_data_keys + sparse_data_keys + low_volume_keys))
@@ -118,7 +149,7 @@ class NedHedgeFundMixins:
         datetime_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
         key_df.to_csv(f"./assets/bad_data/excluded_keys_{datetime_str}.csv")
 
-        print(f"Dropped {len(bad_keys)} of {len(data)} symbols from data dictionary")
+        print(f"Dropped {len(bad_keys)} of {len(data)} symbols from price data dictionary")
 
         # Drop bad keys from original dictionary
         for key in bad_keys:
